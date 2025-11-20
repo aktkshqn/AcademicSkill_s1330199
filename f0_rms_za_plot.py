@@ -3,7 +3,7 @@ import numpy as np
 import os
 
 # --- 設定パラメータ ---
-WAV_FILE = 'sample.wav'       # 分析したい音声ファイル名 (同じディレクトリに配置)
+WAV_FILE = 'sample1.wav'       # 分析したい音声ファイル名 (同じディレクトリに配置)
 RMS_THRESHOLD = 0.01          # 音が存在するとみなすRMSのしきい値 (0.0～1.0)
 F0_METHOD = 'pyin'            # F0抽出アルゴリズム (pyinが最もロバスト)
 # --- 設定終わり ---
