@@ -3,8 +3,6 @@ import os
 import numpy as np
 import librosa
 import matplotlib.pyplot as plt
-from aeneas.executetask import ExecuteTask
-from aeneas.task import Task
 
 # 入力ディレクトリ
 AUDIO_DIR = "wav"
@@ -22,8 +20,6 @@ def align_text(audio_path, text_line):
     task = Task(config_string=config_string)
     task.audio_file_path_absolute = audio_path
     task.text_file_path_absolute = text_line
-    task.output_file_path_absolute = "temp.json"
-    ExecuteTask(task).execute()
     task.output_sync_map_file()
     # JSON 解析でざ行区間を取得するのは後で行う
     return task.output_file_path_absolute
