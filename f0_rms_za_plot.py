@@ -1,88 +1,97 @@
-# f0_rms_za_plot.py
-import os
-import numpy as np
 import librosa
-import matplotlib.pyplot as plt
+import numpy as np
+import os
 
-# 入力ディレクトリ
-AUDIO_DIR = "wav"
-TEXT_FILE = "例文.txt"
-OUTPUT_DIR = "plots"
-os.makedirs(OUTPUT_DIR, exist_ok=True)
+# --- 設定パラメータ ---
+WAV_FILE = 'sample.wav'       # 分析したい音声ファイル名 (同じディレクトリに配置)
+RMS_THRESHOLD = 0.01          # 音が存在するとみなすRMSのしきい値 (0.0～1.0)
+F0_METHOD = 'pyin'            # F0抽出アルゴリズム (pyinが最もロバスト)
+# --- 設定終わり ---
 
-# ざ行判定用関数
-def is_za_line(text):
-    return any(c in "ざじずぜぞ" for c in text)
+def analyze_voicing(file_path):
+    """
+    WAVファイルをロードし、F0とRMSを計算して、有声フレームの割合を出力します。
+    """
+    if not os.path.exists(file_path):
+        print(f"[エラー] ファイルが見つかりません: {file_path}")
+        return
 
-# 音素タイミング取得（aeneasで行単位）
-def align_text(audio_path, text_line):
-    config_string = "task_language=ja|is_text_type=plain|os_task_file_format=json"
-    task = Task(config_string=config_string)
-    task.audio_file_path_absolute = audio_path
-    task.text_file_path_absolute = text_line
-    task.output_sync_map_file()
-    # JSON 解析でざ行区間を取得するのは後で行う
-    return task.output_file_path_absolute
+    print(f"--- 音声ファイル分析: {file_path} ---")
 
-def plot_f0_rms_with_za(audio_path, za_segments, output_name=None):
-    y, sr = librosa.load(audio_path, sr=None)
-    frame_length = 2048
-    hop_length = 256
+    try:
+        # 1. 音声データのロード
+        y, sr = librosa.load(file_path, sr=None) 
+        
+        # hop_length: 分析の細かさ (フレームサイズ)。小さいほど詳細。
+        HOP_LENGTH = 512
+        
+        # 2. 短時間エネルギー (RMS) の計算
+        rms = librosa.feature.rms(y=y, hop_length=HOP_LENGTH)[0]
+        
+        # 3. 基本周波数 (f0) の計算
+        f0, voiced_flag, voiced_probabilities = librosa.pyin(
+            y, 
+            fmin=librosa.note_to_hz('C2'),  # 65.4 Hz (男性の低音程度)
+            fmax=librosa.note_to_hz('C6'),  # 1046.5 Hz (子どもの高音程度)
+            sr=sr,
+            hop_length=HOP_LENGTH
+        )
+        
+        # f0の時間軸に合わせてRMSをリサンプリング (フレーム数を揃える)
+        rms_resampled = librosa.util.fix_length(rms, size=len(f0)) 
 
-    # F0
-    f0, voiced_flag, voiced_prob = librosa.pyin(
-        y, fmin=70, fmax=400, sr=sr, frame_length=frame_length, hop_length=hop_length
-    )
-    f0_clean = np.where(np.isnan(f0), 0.0, f0)
-    times_f0 = librosa.frames_to_time(np.arange(len(f0_clean)), sr=sr, hop_length=hop_length)
+    except Exception as e:
+        print(f"  [致命的なエラー] データ処理中にエラーが発生しました: {e}")
+        return
 
-    # RMS
-    rms = librosa.feature.rms(y=y, frame_length=frame_length, hop_length=hop_length)[0]
-    rms_times = librosa.frames_to_time(np.arange(len(rms)), sr=sr, hop_length=hop_length)
-    rms_scaled = rms * (f0_clean.max() * 1.2 / rms.max() if rms.max() > 0 else 1.0)
+    # 4. 有音区間の特定
+    # RMSがしきい値を超えているフレームを「有音区間」と定義します
+    sound_frames = rms_resampled > RMS_THRESHOLD
+    
+    total_sound_frames = np.sum(sound_frames)
 
-    # プロット
-    plt.figure(figsize=(12, 5))
-    plt.plot(times_f0, f0_clean, color="red", label="F0 (Hz)")
-    plt.fill_between(rms_times, 0, rms_scaled, color="lightblue", alpha=0.5, label="RMS (scaled)")
+    if total_sound_frames == 0:
+        print("  -> [結果] 有音区間が検出されませんでした。（音声が小さすぎるか、無音です）")
+        return
 
-    # ざ行タイムハイライト
-    for start, end in za_segments:
-        plt.axvspan(start, end, color="lightgreen", alpha=0.3)
+    # 5. 有声/無声の判別
+    
+    # 有音区間（声が入っているフレーム）に絞ってf0データを取り出す
+    f0_in_sound_frames = f0[sound_frames] 
+    
+    # f0が NaN (Not a Number) のフレームは「無声」と判定される
+    unvoiced_frames = np.isnan(f0_in_sound_frames)
+    
+    # 有声フレーム数
+    voiced_count = total_sound_frames - np.sum(unvoiced_frames)
+    
+    # 無声フレーム数
+    unvoiced_count = np.sum(unvoiced_frames)
 
-    plt.xlabel("時間 [秒]")
-    plt.ylabel("F0 [Hz] / RMS（スケーリング済み）")
-    plt.title(os.path.basename(audio_path))
-    plt.legend()
-    plt.tight_layout()
+    # 6. 結果の出力
+    
+    print("-" * 30)
+    print("### 📊 有声/無声 判別結果")
+    print(f"  - 全フレーム数 (有音区間): {total_sound_frames} フレーム")
+    print(f"  - 有声フレーム数 ($f_0$検出): {voiced_count} フレーム")
+    print(f"  - 無声フレーム数 ($f_0$未検出): {unvoiced_count} フレーム")
+    
+    # 割合の計算
+    voiced_ratio = (voiced_count / total_sound_frames) * 100
+    unvoiced_ratio = (unvoiced_count / total_sound_frames) * 100
+    
+    print(f"  - 有声フレームの割合: {voiced_ratio:.2f}%")
+    print(f"  - 無声フレームの割合: {unvoiced_ratio:.2f}%")
+    print("-" * 30)
+    
+    if unvoiced_ratio > 50:
+        print("  -> [判定] 音声の半分以上が無声です。全体として無声音が多い発話かもしれません。")
+    elif unvoiced_ratio > 10:
+        print("  -> [判定] 一部に無声区間があります。摩擦音や破裂音、または語尾の無声化の可能性があります。")
+    else:
+        print("  -> [判定] 非常に高い割合で有声です。（母音中心の継続音など）")
 
-    if output_name is None:
-        output_name = os.path.splitext(os.path.basename(audio_path))[0] + "_f0_rms_za.png"
-    output_path = os.path.join(OUTPUT_DIR, output_name)
-    plt.savefig(output_path)
-    plt.close()
-    print(f"出力完了: {output_path}")
-    return output_path
 
-# 実行例
 if __name__ == "__main__":
-    # 例文を読み込む
-    with open(TEXT_FILE, "r", encoding="utf-8") as f:
-        lines = f.readlines()
-
-    for audio_file in os.listdir(AUDIO_DIR):
-        if not audio_file.lower().endswith(".wav"):
-            continue
-        audio_path = os.path.join(AUDIO_DIR, audio_file)
-
-        # 簡易: 行ごとにざ行を判定して、タイミングは wav 全体を均等に割り当てる（簡易版）
-        duration = librosa.get_duration(filename=audio_path)
-        n_lines = len(lines)
-        za_segments = []
-        for i, line in enumerate(lines):
-            if is_za_line(line):
-                start = duration * i / n_lines
-                end = duration * (i + 1) / n_lines
-                za_segments.append((start, end))
-
-        plot_f0_rms_with_za(audio_path, za_segments)
+    # sample.wav を用意してから実行してください
+    analyze_voicing(WAV_FILE)
