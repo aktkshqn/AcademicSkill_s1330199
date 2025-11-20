@@ -2,7 +2,7 @@ import os
 from pydub import AudioSegment
 
 # --- 1. 設定 ---
-INPUT_ROOT_DIR = "."  # WAVファイルがあるルートディレクトリ (例: "./wav")
+INPUT_ROOT_DIR = "wav"  # WAVファイルがあるルートディレクトリ (例: "./wav")
 OUTPUT_ROOT_DIR = "output" # 全ての結果を保存する大元のフォルダ
 
 # ⚠️ 話者IDリスト: 処理したい話者IDをここに記述してください。
