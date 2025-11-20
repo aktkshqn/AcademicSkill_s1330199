@@ -2,7 +2,7 @@ import os
 from pydub import AudioSegment
 
 # --- 1. 設定 ---
-INPUT_ROOT_DIR = "wav"  # WAVファイルがあるルートディレクトリ (例: "./wav")
+INPUT_ROOT_DIR = "."  # WAVファイルがあるルートディレクトリ (例: "./wav")
 OUTPUT_ROOT_DIR = "output" # 全ての結果を保存する大元のフォルダ
 
 # ⚠️ 話者IDリスト: 処理したい話者IDをここに記述してください。
@@ -29,11 +29,18 @@ Z_LINE_MAP = {
     # 濁点を持つ全ての文字（カタカナ含む）にも対応させる場合はここに追加
     'ガ': 'ga', 'ギ': 'gi', 'グ': 'gu', 'ゲ': 'ge', 'ゴ': 'go',
     'ば': 'ba', 'び': 'bi', 'ぶ': 'bu', 'べ': 'be', 'ぼ': 'bo',
-    'ダ': 'da', 'ヂ': 'di', 'ヅ': 'du', 'デ': 'de', 'ド': 'do', # だ行もついでに追加
+    'ダ': 'da', 'ヂ': 'di', 'ヅ': 'du', 'デ': 'de', 'ド': 'do', 
+    'パ': 'pa', 'ピ': 'pi', 'プ': 'pu', 'ペ': 'pe', 'ポ': 'po', # 半濁点もついでに追加
+    'ぱ': 'pa', 'ぴ': 'pi', 'ぷ': 'pu', 'ぺ': 'pe', 'ぽ': 'po',
 }
 OTHER_DIR = "other"
 
-# --- 2. 分類ロジック ---
+# --- 2. マージン設定 ---
+# ざ行の文字に前後にどれだけマージン（余裕）を追加するか (ミリ秒)
+# 例: 50msだと、前後に50msずつ、合計100ms長く切り出されます。
+MARGIN_MS = 50 
+
+# --- 3. 分類ロジック ---
 def categorize_char(char):
     """
     文字をざ行のフォルダ名に分類します。（カタカナ対応強化）
@@ -42,24 +49,17 @@ def categorize_char(char):
     if char in Z_LINE_MAP:
         return Z_LINE_MAP[char]
     
-    # 濁点付きカタカナをひらがなに戻してチェック (例: 「ザ」->「ざ」->'za')
-    # ここではPython標準のunicodedataを使わず、簡易的な置換で対応
-    hiragana_char = char
-    # カタカナ濁点文字のマッピングは複雑なため、ここでは Z_LINE_MAP のキーにカタカナも含めておくのが最も確実ですが、
-    # ユーザー指定のフォルダ名（za, ji, zu, ze, zo）に合わせて、ここでは簡易的にひらがなをキーとして使用し続けます。
-
-    # カタカナ→ひらがな変換（簡易）
-    # 既にZ_LINE_MAPにカタカナが入っている場合は、そのまま利用します。
-    # ここでは、Z_LINE_MAPにない文字は全てOTHER_DIRになるようにします。
+    # 濁点・半濁点付きのカタカナをひらがなに戻してチェック (簡易的な分類)
+    # ここでは、Z_LINE_MAPにない文字は全てOTHER_DIRになります。
     
-    # 例外として、長音符 'ー' や句読点も 'other' に分類されます
-    
+    # 長音符 'ー' や句読点、促音 'っ' などは 'other' に分類されます
     return OTHER_DIR
 
-# --- 3. メイン処理 ---
+# --- 4. メイン処理 ---
 def simple_segment_audio_batch(input_root, output_root, speaker_ids, sentences_data):
     """
     複数の音声ファイルを一律時間分割で処理し、指定フォルダに分類して保存します。
+    ざ行の文字については、前後にマージンを追加して切り出します。
     """
     if not speaker_ids or not sentences_data:
         print("エラー: 処理対象の話者IDまたは例文リストが空です。")
@@ -88,39 +88,50 @@ def simple_segment_audio_batch(input_root, output_root, speaker_ids, sentences_d
                 audio = AudioSegment.from_wav(input_path)
                 total_duration_ms = len(audio)
                 
-                # 各文字が占める時間 (ミリ秒)
+                # 各文字が占める基本時間 (ミリ秒)
                 duration_per_char_ms = total_duration_ms / len(chars)
                 
-                print(f"総時間: {total_duration_ms / 1000:.2f} 秒, 1文字あたり: {duration_per_char_ms:.2f} ms")
+                print(f"総時間: {total_duration_ms / 1000:.2f} 秒, 1文字あたり(ベース): {duration_per_char_ms:.2f} ms")
 
                 current_time_ms = 0
                 
                 # 切り出しと保存
                 for i, char in enumerate(chars):
-                    start_ms = int(current_time_ms)
-                    end_ms = int(current_time_ms + duration_per_char_ms)
-                    
                     # 分類フォルダを決定
                     category_dir = categorize_char(char)
+                    
+                    # 基本の区間
+                    start_ms_base = current_time_ms
+                    end_ms_base = current_time_ms + duration_per_char_ms
+                    
+                    # ざ行（濁点文字）の場合、マージンを追加して切り出し区間を広げる
+                    if category_dir != OTHER_DIR:
+                        # ざ行の切り出し区間を拡張
+                        start_ms_final = max(0, start_ms_base - MARGIN_MS)
+                        end_ms_final = min(total_duration_ms, end_ms_base + MARGIN_MS)
+                    else:
+                        # その他の文字は基本区間のまま
+                        start_ms_final = start_ms_base
+                        end_ms_final = end_ms_base
                     
                     # 出力パスを作成: output/category/S01_001_01_ざ.wav
                     output_sub_dir = os.path.join(output_root, category_dir)
                     os.makedirs(output_sub_dir, exist_ok=True) # フォルダがなければ作成
                     
                     # ファイル名に話者ID, 例文ID, 文字番号を含める
-                    # 例: S01_001_01_ざ.wav
                     output_filename = f"S{speaker_id}_{sentence_id}_{i+1:02d}_{char}.wav"
                     output_path = os.path.join(output_sub_dir, output_filename)
 
                     # 音声をミリ秒単位で切り出し、保存
-                    segment = audio[start_ms:end_ms]
+                    segment = audio[int(start_ms_final):int(end_ms_final)]
                     segment.export(output_path, format="wav")
                     
                     # 進捗を表示 (ざ行のみ詳細を表示)
                     if category_dir != OTHER_DIR:
-                        print(f" -> {category_dir}に保存: {output_filename}")
+                        print(f" -> {category_dir}に保存: {output_filename} (拡張: +{MARGIN_MS}ms/-{MARGIN_MS}ms)")
                     
-                    current_time_ms = end_ms
+                    # 次の文字の開始点は、常にベースの分割時間に基づいて移動
+                    current_time_ms = end_ms_base 
                 
                 print(f"✅ {input_filename} の処理が完了しました。")
 
