@@ -137,7 +137,7 @@ if __name__ == "__main__":
 
         # 結果をCSVに出力
         if not df_results.empty:
-            df_results.to_csv(OUTPUT_CSV, index=False, encoding='utf-8')
+            df_results.to_csv(OUTPUT_CSV, index=False, encoding='cp932')
             print("-" * 50)
             print(f"✅ 解析完了！結果は {OUTPUT_CSV} に保存されました。")
             print(f"総ファイル数: {len(df_results)} 件")
