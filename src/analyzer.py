@@ -2,7 +2,7 @@
 import os
 import csv
 
-from .config import AUDIO_DIR, CSV_DIR, PLOT_DIR
+from .config import AUDIO_DIR, CSV_DIR, PLOT_DIR, USE_VIDEO
 from .f0_extractor import extract_f0
 from .visualize import save_f0_plot
 from .voicing import is_voiced_by_flag, is_voiced_by_f0
@@ -25,10 +25,17 @@ def analyze_file(path, subject, sample):
                 voiced = 1 if is_voiced_by_flag(vf) else 0
             writer.writerow([f"{t:.4f}", f"{fv:.3f}", voiced])
 
-    # 静的プロット（参考用PNG）
+    # 静的プロット（PNG）
     image_path = save_f0_plot(subject, sample, times, f0)
 
-    # 動画作成（F0軸データ・voiced_flag も渡す）
-    mp4_path = create_video(times, f0, voiced_flag, path, subject, sample)
+    # 動画は設定が有効な場合のみ試みる（失敗しても例外で止めない）
+    mp4_path = None
+    if USE_VIDEO:
+        try:
+            mp4_path = create_video(times, f0, voiced_flag, path, subject, sample)
+        except Exception as e:
+            # 動画作成失敗は通知して続行
+            print(f"[警告] 動画作成に失敗しました。動画をスキップします: {e}")
+            mp4_path = None
 
     return csv_path, image_path, mp4_path
