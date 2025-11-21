@@ -1,15 +1,16 @@
 import os
 from pydub import AudioSegment
+from pydub.silence import split_on_silence
+import sys
 
 # --- 1. 設定 ---
-INPUT_ROOT_DIR = "wav"  # WAVファイルがあるルートディレクトリ (例: "./wav")
-OUTPUT_ROOT_DIR = "output" # 全ての結果を保存する大元のフォルダ
+INPUT_ROOT_DIR = "wav"  # WAVファイルがあるルートディレクトリ
+OUTPUT_ROOT_DIR = "output" # 結果を保存する大元のフォルダ
 
-# ⚠️ 話者IDリスト: 処理したい話者IDをここに記述してください。
-# 例: 協力者3人（ID: 01, 02, 03）の場合
+# ⚠️ 話者IDリスト: 処理したい話者ID
 SPEAKER_IDS = ["01", "02", "03"]
 
-# 例文とそのIDのデータ (ファイル名生成のベースとなります)
+# 例文データ
 SENTENCES_DATA = [
     {"id": "001", "text": "ざるそばやのまちじかんにじっくりざっしをよんでいた。"},
     {"id": "002", "text": "いちにちじゅうずっとざーざーふりでざんねんだった。"},
@@ -23,124 +24,148 @@ SENTENCES_DATA = [
     {"id": "010", "text": "ずっとじょうだんをいいあいたいが、ざんねんながらもうじかん。"},
 ]
 
-# ざ行の文字と対応するフォルダ名のマッピング
+# ざ行などのフォルダマッピング
 Z_LINE_MAP = {
     'ざ': 'za', 'じ': 'ji', 'ず': 'zu', 'ぜ': 'ze', 'ぞ': 'zo',
-    # 濁点を持つ全ての文字（カタカナ含む）にも対応させる場合はここに追加
     'ガ': 'ga', 'ギ': 'gi', 'グ': 'gu', 'ゲ': 'ge', 'ゴ': 'go',
     'ば': 'ba', 'び': 'bi', 'ぶ': 'bu', 'べ': 'be', 'ぼ': 'bo',
     'ダ': 'da', 'ヂ': 'di', 'ヅ': 'du', 'デ': 'de', 'ド': 'do', 
-    'パ': 'pa', 'ピ': 'pi', 'プ': 'pu', 'ペ': 'pe', 'ポ': 'po', # 半濁点もついでに追加
+    'パ': 'pa', 'ピ': 'pi', 'プ': 'pu', 'ペ': 'pe', 'ポ': 'po', 
     'ぱ': 'pa', 'ぴ': 'pi', 'ぷ': 'pu', 'ぺ': 'pe', 'ぽ': 'po',
 }
 OTHER_DIR = "other"
 
 # --- 2. マージン設定 ---
 # ざ行の文字に前後にどれだけマージン（余裕）を追加するか (ミリ秒)
-# 例: 50msだと、前後に50msずつ、合計100ms長く切り出されます。
 MARGIN_MS = 50 
 
-# --- 3. 分類ロジック ---
+# --- 3. 無音除去の設定 ---
+# 無音とみなすレベル (dBFS)。平均音量からの相対値で使用します。
+# 例: 平均より -16dB 小さい音を無音とするなど
+SILENCE_THRESH_OFFSET = -16 
+# 無音とみなす最小の長さ (ミリ秒)。これより短い無音は無視（発話の一部とみなす）
+MIN_SILENCE_LEN_MS = 500
+
+# --- 4. 関数定義 ---
+
 def categorize_char(char):
-    """
-    文字をざ行のフォルダ名に分類します。（カタカナ対応強化）
-    """
-    # ざ行のひらがなをチェック
+    """文字をフォルダ名に分類"""
     if char in Z_LINE_MAP:
         return Z_LINE_MAP[char]
-    
-    # 濁点・半濁点付きのカタカナをひらがなに戻してチェック (簡易的な分類)
-    # ここでは、Z_LINE_MAPにない文字は全てOTHER_DIRになります。
-    
-    # 長音符 'ー' や句読点、促音 'っ' などは 'other' に分類されます
     return OTHER_DIR
 
-# --- 4. メイン処理 ---
-def simple_segment_audio_batch(input_root, output_root, speaker_ids, sentences_data):
+def remove_silence(audio_segment):
     """
-    複数の音声ファイルを一律時間分割で処理し、指定フォルダに分類して保存します。
-    ざ行の文字については、前後にマージンを追加して切り出します。
+    音声データから無音区間を除去して、発話部分だけを繋げた音声を返す。
     """
-    if not speaker_ids or not sentences_data:
-        print("エラー: 処理対象の話者IDまたは例文リストが空です。")
-        return
-
-    print(f"処理対象の話者数: {len(speaker_ids)}人, 例文数: {len(sentences_data)}種類")
+    # 音声の平均音量 (dBFS) を取得
+    audio_level = audio_segment.dBFS
     
-    # 話者IDと例文IDを組み合わせる二重ループ
+    # 無音のしきい値を決定 (平均音量 - オフセット)
+    # 固定値 (-40dBFSなど) ではなく、録音レベルに合わせて動的に設定
+    silence_thresh = audio_level + SILENCE_THRESH_OFFSET
+    
+    # split_on_silence で無音部分で分割された音声のリストを取得
+    # keep_silence=100 は、分割点の前後100msの無音を残す（自然に聞こえるように）
+    chunks = split_on_silence(
+        audio_segment,
+        min_silence_len=MIN_SILENCE_LEN_MS,
+        silence_thresh=silence_thresh,
+        keep_silence=100 
+    )
+    
+    if not chunks:
+        return None
+
+    # 分割されたチャンクを結合して一つの音声にする
+    processed_audio = chunks[0]
+    for chunk in chunks[1:]:
+        processed_audio += chunk
+        
+    return processed_audio
+
+def segment_audio_batch(input_root, output_root, speaker_ids, sentences_data):
+    print(f"処理開始: {len(speaker_ids)}名 x {len(sentences_data)}例文")
+    
     for speaker_id in speaker_ids:
         for sentence in sentences_data:
             sentence_id = sentence['id']
             text = sentence['text']
+            chars = list(text) # 文字リストに分解
 
-            # ファイル名を生成: 例: S01_001.wav
+            # 入力ファイルパス
             input_filename = f"S{speaker_id}_{sentence_id}.wav"
             input_path = os.path.join(input_root, input_filename)
-            chars = list(text)
-
-            print(f"\n--- 処理開始: [話者{speaker_id}, 例文{sentence_id}] ({input_filename}) ---")
 
             if not os.path.exists(input_path):
-                print(f"警告: ファイル '{input_path}' が見つかりません。スキップします。")
+                print(f"[スキップ] ファイルなし: {input_path}")
                 continue
 
+            print(f"\n--- 解析中: {input_filename} ---")
+            
             try:
-                audio = AudioSegment.from_wav(input_path)
+                # 1. 音声ロード
+                original_audio = AudioSegment.from_wav(input_path)
+                
+                # 2. 無音除去 (前後の無音や、途中の長い無音をカット)
+                audio = remove_silence(original_audio)
+                
+                if audio is None:
+                    print("  [警告] 音声データが全て無音と判定されました。")
+                    continue
+
                 total_duration_ms = len(audio)
                 
-                # 各文字が占める基本時間 (ミリ秒)
+                # 3. 1文字あたりの時間を計算 (等分割)
                 duration_per_char_ms = total_duration_ms / len(chars)
-                
-                print(f"総時間: {total_duration_ms / 1000:.2f} 秒, 1文字あたり(ベース): {duration_per_char_ms:.2f} ms")
+                print(f"  有効時間: {total_duration_ms/1000:.2f}秒, 文字数: {len(chars)}, 1文字平均: {duration_per_char_ms:.1f}ms")
 
+                # 4. 切り出し処理
                 current_time_ms = 0
                 
-                # 切り出しと保存
                 for i, char in enumerate(chars):
-                    # 分類フォルダを決定
                     category_dir = categorize_char(char)
                     
-                    # 基本の区間
-                    start_ms_base = current_time_ms
-                    end_ms_base = current_time_ms + duration_per_char_ms
+                    # 基本の切り出し区間 (等分割)
+                    start_base = current_time_ms
+                    end_base = current_time_ms + duration_per_char_ms
                     
-                    # ざ行（濁点文字）の場合、マージンを追加して切り出し区間を広げる
+                    # ターゲット文字（ざ行など）の場合はマージンを追加
                     if category_dir != OTHER_DIR:
-                        # ざ行の切り出し区間を拡張
-                        start_ms_final = max(0, start_ms_base - MARGIN_MS)
-                        end_ms_final = min(total_duration_ms, end_ms_base + MARGIN_MS)
+                        start_final = max(0, start_base - MARGIN_MS)
+                        end_final = min(total_duration_ms, end_base + MARGIN_MS)
                     else:
-                        # その他の文字は基本区間のまま
-                        start_ms_final = start_ms_base
-                        end_ms_final = end_ms_base
-                    
-                    # 出力パスを作成: output/category/S01_001_01_ざ.wav
-                    output_sub_dir = os.path.join(output_root, category_dir)
-                    os.makedirs(output_sub_dir, exist_ok=True) # フォルダがなければ作成
-                    
-                    # ファイル名に話者ID, 例文ID, 文字番号を含める
-                    output_filename = f"S{speaker_id}_{sentence_id}_{i+1:02d}_{char}.wav"
-                    output_path = os.path.join(output_sub_dir, output_filename)
+                        start_final = start_base
+                        end_final = end_base
 
-                    # 音声をミリ秒単位で切り出し、保存
-                    segment = audio[int(start_ms_final):int(end_ms_final)]
-                    segment.export(output_path, format="wav")
+                    # 保存先の準備
+                    # フォルダ構成: output/za/S01_001_05_ざ.wav
+                    save_dir = os.path.join(output_root, category_dir)
+                    os.makedirs(save_dir, exist_ok=True)
                     
-                    # 進捗を表示 (ざ行のみ詳細を表示)
+                    # ファイル名: S{話者}_{例文ID}_{文字順}_{文字}.wav
+                    # i+1 で1始まりの番号にする (01, 02...)
+                    save_filename = f"S{speaker_id}_{sentence_id}_{i+1:02d}_{char}.wav"
+                    save_path = os.path.join(save_dir, save_filename)
+                    
+                    # 切り出して保存
+                    segment = audio[int(start_final):int(end_final)]
+                    segment.export(save_path, format="wav")
+                    
+                    # ざ行の時だけログ出し
                     if category_dir != OTHER_DIR:
-                        print(f" -> {category_dir}に保存: {output_filename} (拡張: +{MARGIN_MS}ms/-{MARGIN_MS}ms)")
-                    
-                    # 次の文字の開始点は、常にベースの分割時間に基づいて移動
-                    current_time_ms = end_ms_base 
-                
-                print(f"✅ {input_filename} の処理が完了しました。")
+                        print(f"    -> 保存: {category_dir}/{save_filename} ({len(segment)}ms)")
 
-            except FileNotFoundError:
-                print("\n🚨 エラー: ffmpegが見つからないか、音声ファイルの形式に問題があります。")
-                print("    'pydub'の実行には、外部ツール 'ffmpeg' が必要です。インストールを確認してください。")
+                    # 次の文字へ (時間はベースの時間で進める)
+                    current_time_ms = end_base
+
             except Exception as e:
-                print(f"\n致命的なエラーが発生しました: {e}")
-
+                print(f"  [エラー] 処理中に問題が発生しました: {e}")
 
 if __name__ == "__main__":
-    simple_segment_audio_batch(INPUT_ROOT_DIR, OUTPUT_ROOT_DIR, SPEAKER_IDS, SENTENCES_DATA)
+    # フォルダの存在確認
+    if not os.path.exists(INPUT_ROOT_DIR):
+        print(f"[エラー] 入力フォルダ '{INPUT_ROOT_DIR}' が見つかりません。作成してWAVファイルを入れてください。")
+    else:
+        segment_audio_batch(INPUT_ROOT_DIR, OUTPUT_ROOT_DIR, SPEAKER_IDS, SENTENCES_DATA)
+        print("\n✅ 全ての処理が完了しました。")
