@@ -8,7 +8,7 @@ INPUT_ROOT_DIR = "wav"  # WAVファイルがあるルートディレクトリ
 OUTPUT_ROOT_DIR = "output" # 結果を保存する大元のフォルダ
 
 # ⚠️ 話者IDリスト: 処理したい話者ID
-SPEAKER_IDS = ["01", "02", "03"]
+SPEAKER_IDS = ["01", "02", "03", "04"]
 
 # 例文データ
 SENTENCES_DATA = [
